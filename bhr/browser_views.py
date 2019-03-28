@@ -67,6 +67,14 @@ class DoUnblockView(FormView):
     template_name = "bhr/unblock.html"
     form_class = UnblockForm
 
+    def get_context_data(self, **kwargs):
+        context = super(DoUnblockView, self).get_context_data(**kwargs)
+
+        block_ids = self.request.POST.get("block_ids").split()
+        blocks = Block.objects.filter(id__in=block_ids).all()
+        context["blocks"] = blocks
+        return context
+
     def form_valid(self, form):
         query = form.cleaned_data['query']
         block_ids = form.cleaned_data['block_ids'].split()
@@ -77,7 +85,7 @@ class DoUnblockView(FormView):
         for b in blocks:
             b.unblock_now(self.request.user, why)
 
-        if query:
+        if query and query != "list":
             return redirect(reverse("query") + "?query=" + query)
         else:
             return redirect(reverse("list"))

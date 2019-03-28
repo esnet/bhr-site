@@ -3,11 +3,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 import dateutil.parser
 import datetime
+import ipaddress
 import json
 import csv
 
 from bhr.models import BHRDB, Block, WhitelistEntry, SourceBlacklistEntry, is_whitelisted, is_prefixlen_too_small, is_source_blacklisted, filter_local_networks
-from bhr.util import expand_time
+from bhr.util import expand_time, ip_family
 
 # Create your tests here.
 
@@ -158,6 +159,7 @@ class DBTests(TestCase):
     def test_unblock_now_moves_to_pending_removal(self):
         b1 = self.db.add_block('1.2.3.4', self.user, 'test', 'testing')
         self.db.unblock_now('1.2.3.4', self.user, 'testing')
+        b1.refresh_from_db()
 
         #it needs to be blocked on a host to be able to be pending unblock
         self.db.set_blocked(b1, 'bgp1')
@@ -251,10 +253,23 @@ class DBTests(TestCase):
         WhitelistEntry(who=self.user, why='test', cidr='1.2.3.0/24').save()
         self.db.unblock_now('1.2.3.4', self.user, 'testing')
 
+    @override_settings()
     def test_prefixlen_too_small(self):
-        self.assertEqual(bool(is_prefixlen_too_small(u"1.2.3.4")), False)
-        self.assertEqual(bool(is_prefixlen_too_small(u"1.2.3.0/24")), False)
-        self.assertEqual(bool(is_prefixlen_too_small(u"1.2.0.0/20")), True)
+        from django.conf import settings
+        settings.BHR['minimum_prefixlen'] = 24
+        self.assertEqual(is_prefixlen_too_small(u"1.2.3.4"), False)
+        self.assertEqual(is_prefixlen_too_small(u"1.2.3.0/24"), False)
+        self.assertEqual(is_prefixlen_too_small(u"1.2.0.0/20"), True)
+
+        settings.BHR['minimum_prefixlen'] = 32
+        self.assertEqual(is_prefixlen_too_small(u"1.2.3.0/24"), True)
+
+    @override_settings()
+    def test_prefixlen_too_small_v6(self):
+        from django.conf import settings
+        settings.BHR['minimum_prefixlen_v6'] = 64
+        self.assertEqual(is_prefixlen_too_small(u"fe80::/32"), True)
+        self.assertEqual(is_prefixlen_too_small(u"fe80::1/128"), False)
 
     def test_source_blacklisted(self):
         self.assertEqual(bool(is_source_blacklisted("test")), False)
@@ -413,7 +428,7 @@ class ApiTest(TestCase):
         data = self.client.get("/bhr/api/queue/bgp1").data
 
     def test_unblock_now(self):
-        self._add_block(cidr='1.2.3.4')
+        self._add_block(cidr='1.2.3.11',why='testing unblock now')
 
         block = self.client.get("/bhr/api/queue/bgp1").data[0]
         self.client.post(block['set_blocked'], dict(ident='bgp1'))
@@ -421,7 +436,7 @@ class ApiTest(TestCase):
         q = self.client.get("/bhr/api/unblock_queue/bgp1").data
         self.assertEqual(len(q), 0)
 
-        self.client.post("/bhr/api/unblock_now", dict(cidr="1.2.3.4", why="testing"))
+        self.client.post("/bhr/api/unblock_now", dict(cidr="1.2.3.11", why="testing"))
 
         q = self.client.get("/bhr/api/unblock_queue/bgp1").data
         self.assertEqual(len(q), 1)
@@ -738,3 +753,14 @@ class UtilTest(TestCase):
 
         for text, number in cases:
             self.assertEqual(expand_time(text), number)
+
+    def test_ip_family(self):
+        cases = [
+            ('1.2.3.4', 4),
+            ('fe80::69b:c5:78a1:5ead', 6),
+            (ipaddress.ip_address(u'1.2.3.4'), 4),
+        ]
+        for ip, family in cases:
+            self.assertEqual(ip_family(ip), family)
+
+        self.assertRaises(ValueError, ip_family, "banana")

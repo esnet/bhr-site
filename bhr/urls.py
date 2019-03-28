@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.contrib.auth.decorators import login_required, permission_required
-from django.conf.urls import patterns, include, url
+from django.conf.urls import include, url
 
 from rest_framework import routers
 from bhr import views
@@ -24,6 +24,7 @@ urlpatterns = [
     url(r'^api/block$', views.block.as_view()),
     url(r'^api/unblock_now$', views.unblock_now.as_view()),
     url(r'^api/stats$', views.stats),
+    url(r'^api/metrics$', views.metrics),
     url(r'^api/source_stats$', views.source_stats),
 
     url(r'^api/mblock$', views.mblock.as_view()),

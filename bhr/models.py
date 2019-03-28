@@ -1,3 +1,5 @@
+from django_pglocks import advisory_lock
+
 from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
@@ -9,13 +11,14 @@ import ipaddress
 
 from django.utils import timezone
 import datetime
+import time
 
 from django.conf import settings
 
 from urllib import quote
 import logging
 
-from bhr.util import expand_time, resolve
+from bhr.util import expand_time, resolve, ip_family
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +41,12 @@ def is_whitelisted(cidr):
     return False
 
 def is_prefixlen_too_small(cidr):
-    minimum_prefixlen = settings.BHR.get('minimum_prefixlen', 24)
-    cidr = ipaddress.ip_network(cidr)
+    family = ip_family(cidr)
+    if family == 4:
+        minimum_prefixlen = settings.BHR.get('minimum_prefixlen', 24)
+    else:
+        minimum_prefixlen = settings.BHR.get('minimum_prefixlen_v6', 64)
+    cidr = ipaddress.ip_network(unicode(cidr))
     return cidr.prefixlen < minimum_prefixlen
 
 def is_source_blacklisted(source):
@@ -88,11 +95,8 @@ class PendingBlockManager(models.Manager):
 class PendingRemovalBlockManager(models.Manager):
     def get_queryset(self):
         return super(PendingRemovalBlockManager, self).get_queryset().filter(
-            Q(unblock_at__lt=timezone.now()) |
-            Q(forced_unblock=True)
-        ).filter(
-            id__in = BlockEntry.objects.distinct('block_id').filter(removed__isnull=True).values_list('block_id', flat=True)
-        )
+            id__in = BlockEntry.objects.distinct('block_id').filter(removed__isnull=True, unblock_at__lte=timezone.now()).values_list('block_id', flat=True)
+        ).order_by('unblock_at')
 
 class ExpiredBlockManager(models.Manager):
     def get_queryset(self):
@@ -139,7 +143,7 @@ class Block(models.Model):
     expired = ExpiredBlockManager()
 
     def save(self, *args, **kwargs):
-        if not self.skip_whitelist and not self.unblock_now:
+        if self.skip_whitelist is False and self.forced_unblock is False:
             wle = is_whitelisted(self.cidr)
             if wle:
                 raise WhitelistError(wle.why)
@@ -179,24 +183,35 @@ class Block(models.Model):
         return timezone.now() - self.unblock_at
 
     def unblock_now(self, who, why):
+        logger.info("UNBLOCK_NOW ID=%s IP=%s", self.id, self.cidr)
         self.forced_unblock = True
         self.unblock_who = who
         self.unblock_why = why
-        self.unblock_at = timezone.now()
+        now = timezone.now()
+        self.unblock_at = now
+        BlockEntry.objects.filter(block_id=self.id).update(unblock_at=now)
         self.save()
 
 class BlockEntry(models.Model):
     block = models.ForeignKey(Block)
+
     ident = models.CharField("blocker ident", max_length=50, db_index=True)
 
     added   = models.DateTimeField('date added', auto_now_add=True)
-    removed =  models.DateTimeField('date removed', null=True, db_index=True)
+    removed =  models.DateTimeField('date removed', null=True)
+
+    #Denormalized from Block
+    unblock_at = models.DateTimeField('date to be unblocked', null=True, db_index=True)
 
     class Meta:
         unique_together = ('block', 'ident')
 
     def set_unblocked(self):
         self.removed = timezone.now()
+
+    @classmethod
+    def set_unblocked_by_id(self, id):
+        BlockEntry.objects.filter(pk=id).update(removed=timezone.now())
 
 class BHRDB(object):
     def __init__(self):
@@ -250,6 +265,14 @@ class BHRDB(object):
         #regular repeat offender
         return duration/return_to_base_factor;
 
+    def add_block_multi(self, who, blocks):
+        created = []
+        with advisory_lock("add_block"), transaction.atomic():
+            for block in blocks:
+                b = self.add_block(who=who, **block)
+                created.append(b)
+        return created
+
     def add_block(self, cidr, who, source, why, duration=None, unblock_at=None, skip_whitelist=False, extend=True, autoscale=False):
         if duration:
             duration = expand_time(duration)
@@ -258,26 +281,27 @@ class BHRDB(object):
         if duration and not unblock_at:
             unblock_at = now + datetime.timedelta(seconds=duration)
 
-        b = self.get_block(cidr)
-        if b:
-            if extend is False or b.unblock_at is None or (unblock_at and unblock_at <= b.unblock_at):
-                logger.info('DUPE IP=%s', cidr)
+        with advisory_lock("add_block") as acquired, transaction.atomic():
+            b = self.get_block(cidr)
+            if b:
+                if extend is False or b.unblock_at is None or (unblock_at and unblock_at <= b.unblock_at):
+                    logger.info('DUPE IP=%s', cidr)
+                    return b
+                b.unblock_at = unblock_at
+                BlockEntry.objects.filter(block_id=b.id).update(unblock_at=unblock_at)
+                logger.info('EXTEND IP=%s time extended UNTIL=%s DURATION=%s', cidr, unblock_at, duration)
+                b.save()
                 return b
-            b.unblock_at = unblock_at
-            logger.info('EXTEND IP=%s time extended UNTIL=%s DURATION=%s', cidr, unblock_at, duration)
-            b.save()
-            return b
 
-        if duration and autoscale:
-            lb = self.get_last_block(cidr)
-            if lb and lb.duration:
-                last_duration = lb.duration and lb.duration.total_seconds() or duration
-                scaled_duration = max(duration, self.scale_duration(lb.age.total_seconds(), last_duration))
-                logger.info("Scaled duration from %d to %d", duration, scaled_duration)
-                duration = scaled_duration
-                unblock_at = now + datetime.timedelta(seconds=duration)
+            if duration and autoscale:
+                lb = self.get_last_block(cidr)
+                if lb and lb.duration:
+                    last_duration = lb.duration and lb.duration.total_seconds() or duration
+                    scaled_duration = max(duration, self.scale_duration(lb.age.total_seconds(), last_duration))
+                    logger.info("Scaled duration from %d to %d", duration, scaled_duration)
+                    duration = scaled_duration
+                    unblock_at = now + datetime.timedelta(seconds=duration)
 
-        with transaction.atomic():
             b = Block(cidr=cidr, who=who, source=source, why=why, added=now, unblock_at=unblock_at, skip_whitelist=skip_whitelist)
             b.save()
 
@@ -303,7 +327,7 @@ class BHRDB(object):
 
     def set_blocked(self, b, ident):
         logger.info("SET_BLOCKED ID=%s IP=%s IDENT=%s", b.id, b.cidr, ident)
-        return b.blockentry_set.create(ident=ident)
+        return b.blockentry_set.create(ident=ident, unblock_at=b.unblock_at)
 
     def set_unblocked(self, b, ident):
         b = b.blockentry_set.get(ident=ident)
@@ -338,23 +362,24 @@ class BHRDB(object):
         )
 
     def unblock_queue(self, ident):
-        return BlockEntry.objects.filter(removed__isnull=True, ident=ident).filter(
-            block_id__in = self.expired().values_list('id', flat=True))
+        return BlockEntry.objects.filter(
+            removed__isnull=True,
+            ident=ident,
+            unblock_at__lte=timezone.now(),
+        ).order_by('unblock_at')
 
     def set_blocked_multi(self, ident, ids):
         with transaction.atomic():
             for id in ids:
                 block = Block.objects.get(pk=id)
-                block.blockentry_set.create(ident=ident)
+                block.blockentry_set.create(ident=ident, unblock_at=block.unblock_at)
                 logger.info("SET_BLOCKED ID=%s IP=%s IDENT=%s", id, block.cidr, ident)
 
     def set_unblocked_multi(self, ids):
         with transaction.atomic():
             for id in ids:
-                entry = BlockEntry.objects.get(pk=id)
-                entry.set_unblocked()
-                entry.save()
-                logger.info("SET_UNBLOCKED ID=%s IP=%s IDENT=%s", entry.block.id, entry.block.cidr, entry.ident)
+                BlockEntry.set_unblocked_by_id(id)
+                logger.info("SET_UNBLOCKED ID=%s", id)
 
     def get_history(self, query):
         if query[0].isdigit(): #assume cidr block
