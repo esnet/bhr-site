@@ -32,7 +32,7 @@ class SourceBlacklistedError(Exception):
     pass
 
 def is_whitelisted(cidr):
-    cidr = ipaddress.ip_network(unicode(cidr))
+    cidr = ipaddress.ip_network(str(cidr))
     for item in WhitelistEntry.objects.all():
         if cidr[0] in item.cidr or cidr[-1] in item.cidr:
             return item
@@ -46,7 +46,7 @@ def is_prefixlen_too_small(cidr):
         minimum_prefixlen = settings.BHR.get('minimum_prefixlen', 24)
     else:
         minimum_prefixlen = settings.BHR.get('minimum_prefixlen_v6', 64)
-    cidr = ipaddress.ip_network(unicode(cidr))
+    cidr = ipaddress.ip_network(str(cidr))
     return cidr.prefixlen < minimum_prefixlen
 
 def is_source_blacklisted(source):

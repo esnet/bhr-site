@@ -10,7 +10,7 @@ from bhr.serializers import (WhitelistEntrySerializer,
 from rest_framework import status
 from rest_framework import generics
 from rest_framework.decorators import api_view
-from rest_framework.decorators import detail_route, list_route
+from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.settings import api_settings
 from rest_framework.permissions import IsAuthenticated, DjangoModelPermissions, BasePermission
@@ -50,7 +50,7 @@ class BlockEntryViewset(viewsets.ModelViewSet):
     permission_classes = [DjangoModelPermissions]
     queryset = BlockEntry.objects.all()
 
-    @detail_route(methods=['post'])
+    @action(detail=True, methods=['post'])
     def set_unblocked(self, request, pk=None):
         entry = self.get_object()
         entry.set_unblocked()
@@ -70,7 +70,7 @@ class BlockViewset(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(who = self.request.user)
 
-    @detail_route(methods=['post'])
+    @action(detail=True, methods=['post'])
     def set_blocked(self, request, pk=None):
         if not request.user.has_perm('bhr.add_blockentry'):
             raise PermissionDenied()

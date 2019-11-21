@@ -5,7 +5,7 @@ from io import StringIO
 import socket
 
 def clean_ascii_row(row):
-    return [c.encode('ascii','replace') if isinstance(c, basestring) else c for c in row]
+    return [c.encode('ascii','replace') if isinstance(c, bytes) else c for c in row]
 
 def respond_csv(lst, headers):
     f = StringIO()
