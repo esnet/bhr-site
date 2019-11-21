@@ -22,8 +22,6 @@ SECRET_KEY = 'kcjc2^t3t2agpj&eaul!a0!(r)!b_t*e=3y=x(1s*$3ec^bz^2'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-TEMPLATE_DEBUG = True
-
 ALLOWED_HOSTS = []
 
 
