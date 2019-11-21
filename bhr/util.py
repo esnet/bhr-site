@@ -1,6 +1,6 @@
 from django.http import HttpResponse
 import csv
-from cStringIO import StringIO
+from io import StringIO
 
 import socket
 

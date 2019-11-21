@@ -15,7 +15,7 @@ import time
 
 from django.conf import settings
 
-from urllib import quote
+from urllib.parse import quote
 import logging
 
 from bhr.util import expand_time, resolve, ip_family
@@ -58,13 +58,13 @@ def is_source_blacklisted(source):
 
 class WhitelistEntry(models.Model):
     cidr = CidrAddressField()
-    who = models.ForeignKey(User)
+    who = models.ForeignKey(User, on_delete=models.PROTECT)
     why = models.TextField()
     added = models.DateTimeField('date added', auto_now_add=True)
 
 class SourceBlacklistEntry(models.Model):
     source = models.CharField(max_length=30, unique=True)
-    who = models.ForeignKey(User)
+    who = models.ForeignKey(User, on_delete=models.PROTECT)
     why = models.TextField()
     added = models.DateTimeField('date added', auto_now_add=True)
 
@@ -120,7 +120,7 @@ class Block(models.Model):
     )
 
     cidr = CidrAddressField(db_index=True)
-    who  = models.ForeignKey(User)
+    who  = models.ForeignKey(User, on_delete=models.PROTECT)
     source = models.CharField(max_length=30, db_index=True)
     why  = models.TextField()
 
@@ -133,7 +133,7 @@ class Block(models.Model):
 
     forced_unblock  = models.BooleanField(default=False)
     unblock_why = models.TextField(blank=True)
-    unblock_who = models.ForeignKey(User, related_name='+', null=True, blank=True)
+    unblock_who = models.ForeignKey(User, on_delete=models.PROTECT, related_name='+', null=True, blank=True)
 
     objects = models.Manager()
     current = CurrentBlockManager()
@@ -193,7 +193,7 @@ class Block(models.Model):
         self.save()
 
 class BlockEntry(models.Model):
-    block = models.ForeignKey(Block)
+    block = models.ForeignKey(Block, on_delete=models.CASCADE)
 
     ident = models.CharField("blocker ident", max_length=50, db_index=True)
 
